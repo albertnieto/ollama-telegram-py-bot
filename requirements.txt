@@ -2,3 +2,5 @@ python-dotenv
 loguru
 requests
 python-telegram-bot
+pymongo
+pytz
