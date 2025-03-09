@@ -126,22 +126,12 @@ def check_pole_message(message_text, message_date, user_id, group_id):
     # Convert message date to Madrid time
     madrid_time = message_date.astimezone(MADRID_TZ)
 
-    # Log the message for debugging
-    logger.debug(
-        f"Checking message: '{message_text}' from user {user_id} in group {group_id}"
-    )
-
     # Normalize message text: strip whitespace and convert to lowercase
     normalized_text = message_text.strip().lower()
-    logger.debug(f"Normalized message: '{normalized_text}'")
 
     # IMPORTANT: First check all regular pole triggers before checking for clown pole
     # This ensures regular poles are not mistakenly classified as clown poles
     for pattern, pole_type in COMPILED_TRIGGERS:
-        # Debug log the pattern we're checking
-        logger.debug(
-            f"Checking pattern: '{pattern.pattern}' for pole type: {pole_type}"
-        )
 
         # Use fullmatch to ensure entire string matches
         match = pattern.fullmatch(normalized_text)

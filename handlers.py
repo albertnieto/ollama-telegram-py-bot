@@ -166,78 +166,79 @@ async def my_points_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Handles plain text messages. Checks for pole attempts and message reactions.
+    
+    Behavior:
+    - POLE_TYPES and TIME_SPECIFIC_POLES: Send text message, no reaction
+    - ADDITIONAL_POLE_TYPES: React with 👍, no text message
+    - Clown pole (invalid pole attempt): React with 🤡, no text message
+    - Other message reactions: React with 👍, send text response if configured
     """
     # Skip if this is not a text message
     if not update.message or not update.message.text:
         return
-
+    
     # Process in different ways depending on chat type
     chat = update.effective_chat
     user = update.effective_user
     message_text = update.message.text
-
+    
     # Debug log all messages that come through
-    logger.debug(
-        f"Received message in {chat.type} chat: '{message_text}' from user {user.id}"
-    )
-
+    logger.debug(f"Received message in {chat.type} chat: '{message_text}' from user {user.id}")
+    
     try:
         # Create or update user record
         User.create_or_update(user.id, user.first_name, user.username, user.is_bot)
-
+        
         # If in a group, check for pole attempts and message reactions
         if chat.type in ["group", "supergroup"]:
             Group.create_or_update(chat.id, chat.title, chat.type)
-
+            
             message_date = update.message.date
-
+            
             logger.debug(f"Processing message in group {chat.id}: '{message_text}'")
-
+            
             # Check if this is a pole attempt or reaction trigger
-            pole_data, counter_message, reaction_data = check_pole_message(
-                message_text, message_date, user.id, chat.id
-            )
-
+            pole_data, counter_message, reaction_data = check_pole_message(message_text, message_date, user.id, chat.id)
+            
+            # Main pole types: Send text message, no reaction
             if pole_data:
-                # Successfully claimed a pole
+                # Successfully claimed a main pole (POLE_TYPES or TIME_SPECIFIC_POLES)
                 response_message = format_pole_message(pole_data, user.first_name)
                 await update.message.reply_text(response_message, parse_mode="Markdown")
-                logger.info(
-                    f"User {user.id} claimed pole {pole_data['type']} in group {chat.id}"
-                )
+                logger.info(f"User {user.id} claimed pole {pole_data['type']} in group {chat.id}")
                 return
+                
+            # Counter-based poles still in progress: Send text message, no reaction
             elif counter_message:
                 # Counter-based pole attempt (not yet completed)
                 await update.message.reply_text(counter_message, parse_mode="Markdown")
-                logger.info(
-                    f"User {user.id} made counter-based pole attempt in group {chat.id}"
-                )
+                logger.info(f"User {user.id} made counter-based pole attempt in group {chat.id}")
                 return
+                
+            # All other cases that trigger a reaction
             elif reaction_data:
-                # Message should trigger a reaction
-                emoji = reaction_data.get("emoji")
+                reaction_type = reaction_data.get("type")
                 response = reaction_data.get("response")
-
-                # Add reaction emoji if available
-                if emoji:
-                    try:
-                        # Try to react with emoji (depends on bot permissions)
-                        await update.message.set_reaction(emoji)
-                        logger.info(
-                            f"Added {emoji} reaction to message from user {user.id} in group {chat.id}"
-                        )
-                    except Exception as e:
-                        logger.warning(f"Unable to add emoji reaction: {e}")
-
-                # Send text response if available
+                
+                try:
+                    # Simple logic: if it's a clown pole, use clown emoji, otherwise use thumbs up
+                    if reaction_type == "clown_pole":
+                        await update.message.set_reaction("🤡")
+                        logger.info(f"Added 🤡 reaction for clown pole to message from user {user.id}")
+                    else:
+                        # All other reaction types (including ADDITIONAL_POLE_TYPES)
+                        await update.message.set_reaction("👍")
+                        logger.info(f"Added 👍 reaction to message from user {user.id}")
+                except Exception as e:
+                    logger.warning(f"Unable to add emoji reaction: {e}")
+                
+                # Send text response if available (mostly for message reactions, not poles)
                 if response:
                     await update.message.reply_text(response)
-                    logger.info(
-                        f"Sent reaction response to user {user.id} in group {chat.id}"
-                    )
-
+                    logger.info(f"Sent reaction response to user {user.id} in group {chat.id}")
+                
                 return
-
+        
         # In private chat, inform user to use the /ask command
         elif chat.type == "private":
             if check_llm_availability():
@@ -253,6 +254,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error in message handler: {e}")
         logger.exception("Stack trace:")
-        await update.message.reply_text(
-            "Ocurrió un error procesando tu mensaje. Por favor, inténtalo de nuevo."
-        )
+        await update.message.reply_text("Ocurrió un error procesando tu mensaje. Por favor, inténtalo de nuevo.")
+
+
+
+
