@@ -15,42 +15,39 @@ OLLAMA_ENABLED = os.getenv("OLLAMA_ENABLED", "true").lower() == "true"
 # Global variable to track LLM availability
 _llm_available = None
 
+
 def check_llm_availability():
     """
     Check if the Ollama LLM is available and responding.
     Returns True if available, False otherwise.
     """
     global _llm_available
-    
+
     # If OLLAMA_ENABLED is False, don't even try
     if not OLLAMA_ENABLED:
         logger.info("Ollama integration is disabled via configuration.")
         _llm_available = False
         return False
-    
+
     # If we've already checked and LLM is disabled, no need to check again
     if _llm_available is False:
         return False
-        
+
     try:
         # Use a simple health check if available, or a minimal query
         logger.info(f"Testing connection to Ollama at {OLLAMA_API_URL}")
-        
+
         # Try a minimal request
-        payload = {
-            "model": MODEL_NAME,
-            "prompt": "test",
-            "stream": False
-        }
-        
+        payload = {"model": MODEL_NAME, "prompt": "test", "stream": False}
+
         response = requests.post(OLLAMA_API_URL, json=payload, timeout=5)
         response.raise_for_status()
-        
+
         # If we get here, the LLM is available
         logger.info("Successfully connected to Ollama LLM")
         _llm_available = True
         return True
-        
+
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to connect to Ollama LLM: {e}")
         _llm_available = False
@@ -59,27 +56,28 @@ def check_llm_availability():
         logger.error(f"Unexpected error checking Ollama availability: {ex}")
         _llm_available = False
         return False
-    
+
+
 def query_llm(prompt: str) -> str:
     """
     Sends the prompt to the LLM API endpoint (with streaming disabled)
     and returns the model's complete response.
-    
+
     It prepends instructions to generate plain text output suitable for Telegram.
     Also, it post-processes the answer to remove any <think> tags.
-    
+
     If Ollama is disabled or unavailable, returns a fallback message.
     """
     global _llm_available
-    
+
     # Check if we need to test LLM availability
     if _llm_available is None:
         _llm_available = check_llm_availability()
-    
+
     # If LLM is not available, return a fallback message
     if not _llm_available:
         return "Lo siento, la función de LLM no está disponible actualmente."
-    
+
     try:
         # Inject instruction so the answer is plain text without markdown/latex or <think> tags.
         instruction = (
@@ -91,7 +89,7 @@ def query_llm(prompt: str) -> str:
         payload = {
             "model": MODEL_NAME,
             "prompt": full_prompt,
-            "stream": False  # Instruct the API not to stream responses.
+            "stream": False,  # Instruct the API not to stream responses.
         }
         logger.debug("Sending payload: {}", payload)
         response = requests.post(OLLAMA_API_URL, json=payload, timeout=60)
@@ -104,7 +102,7 @@ def query_llm(prompt: str) -> str:
 
         # Remove any <think>...</think> blocks from the answer
         answer = re.sub(r"<think>.*?</think>", "", answer, flags=re.DOTALL)
-        
+
         return answer.strip()
 
     except requests.exceptions.RequestException as e:
