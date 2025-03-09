@@ -138,7 +138,7 @@ async def my_points_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Handles plain text messages. Checks for pole attempts and passes to LLM if needed.
+    Handles plain text messages. Checks for pole attempts only.
     """
     # Skip if this is not a text message
     if not update.message or not update.message.text:
@@ -147,19 +147,22 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Process in different ways depending on chat type
     chat = update.effective_chat
     user = update.effective_user
+    message_text = update.message.text
+    
+    # Debug log all messages that come through
+    logger.debug(f"Received message in {chat.type} chat: '{message_text}' from user {user.id}")
     
     try:
         # Create or update user record
         User.create_or_update(user.id, user.first_name, user.username, user.is_bot)
         
-        # If in a group, check for pole attempts first
-        if chat.type != "private":
+        # If in a group, check for pole attempts
+        if chat.type in ["group", "supergroup"]:
             Group.create_or_update(chat.id, chat.title, chat.type)
             
-            message_text = update.message.text
             message_date = update.message.date
             
-            logger.debug(f"Processing message in group: '{message_text}'")
+            logger.debug(f"Processing message in group {chat.id}: '{message_text}'")
             
             # Check if this is a pole attempt
             pole_data, counter_message = check_pole_message(message_text, message_date, user.id, chat.id)
@@ -168,50 +171,21 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # Successfully claimed a pole
                 response_message = format_pole_message(pole_data, user.first_name)
                 await update.message.reply_text(response_message, parse_mode="Markdown")
-                logger.info("User {} claimed pole {} in group {}", user.id, pole_data["type"], chat.id)
+                logger.info(f"User {user.id} claimed pole {pole_data['type']} in group {chat.id}")
                 return
             elif counter_message:
                 # Counter-based pole attempt (not yet completed)
-                await update.message.reply_text(counter_message)
-                logger.info("User {} made counter-based pole attempt in group {}", user.id, chat.id)
+                await update.message.reply_text(counter_message, parse_mode="Markdown")
+                logger.info(f"User {user.id} made counter-based pole attempt in group {chat.id}")
                 return
-            
-            # Not a valid pole attempt, check if bot was mentioned
-            is_bot_mentioned = False
-            if update.message.entities:
-                for entity in update.message.entities:
-                    if entity.type == "mention":
-                        mention = update.message.text[entity.offset:entity.offset+entity.length]
-                        if mention == f"@{context.bot.username}":
-                            is_bot_mentioned = True
-                            break
-            
-            is_reply_to_bot = (update.message.reply_to_message and 
-                            update.message.reply_to_message.from_user and 
-                            update.message.reply_to_message.from_user.id == context.bot.id)
-            
-            # Only process with LLM if bot was mentioned or if message is a reply to the bot
-            # AND LLM is available
-            if (is_bot_mentioned or is_reply_to_bot) and check_llm_availability():
-                logger.info("Bot mentioned or replied to by user {}: {}", user.id, message_text)
-                
-                # Send a typing indicator
-                await context.bot.send_chat_action(chat_id=chat.id, action="typing")
-                
-                answer = query_llm(message_text)
-                await update.message.reply_text(answer)
-                
-        # In private chat, respond with LLM if available
-        else:
+        
+        # In private chat, inform user to use the /ask command
+        elif chat.type == "private":
             if check_llm_availability():
-                user_input = update.message.text
-                logger.info("Received private message from user {}: {}", user.id, user_input)
-                
-                # Send a typing indicator
-                await context.bot.send_chat_action(chat_id=chat.id, action="typing")
-                
-                answer = query_llm(user_input)
-                await update.message.reply_text(answer)
+                await update.message.reply_text(
+                    "Para hacer preguntas al asistente, por favor usa el comando /ask seguido de tu pregunta. "
+                    "Por ejemplo: /ask ¿Cuál es la capital de Francia?"
+                )
             else:
                 await update.message.reply_text(
                     "Lo siento, el asistente LLM no está disponible en este momento. "
@@ -219,4 +193,5 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
     except Exception as e:
         logger.error(f"Error in message handler: {e}")
+        logger.exception("Stack trace:")
         await update.message.reply_text("Ocurrió un error procesando tu mensaje. Por favor, inténtalo de nuevo.")

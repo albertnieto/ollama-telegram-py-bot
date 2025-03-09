@@ -1,5 +1,4 @@
 import json
-import os
 from telegram import Update
 from loguru import logger
 from bot import main as get_application

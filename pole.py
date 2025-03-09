@@ -1,9 +1,7 @@
-import re
 import random
-from datetime import datetime, time
 import pytz
 from loguru import logger
-from models import User, Group, Pole
+from models import User, Pole, PoleMina
 from config import ALL_POLE_TYPES, COMPILED_TRIGGERS, DEBUG_POLE_MATCHING
 # Get db reference for updates
 from models import db
@@ -31,10 +29,13 @@ def check_pole_message(message_text, message_date, user_id, group_id):
     # Log the message for debugging
     logger.debug(f"Checking message: '{message_text}' from user {user_id} in group {group_id}")
     
+    # Normalize message text: strip whitespace and convert to lowercase
+    normalized_text = message_text.strip().lower()
+    
     # Check all triggers
-    for pattern, pole_type in COMPILED_TRIGGERS:
+    for pattern, pole_type in COMPILED_TRIGGERS:        
         # Use fullmatch to ensure entire string matches
-        match = pattern.fullmatch(message_text.strip().lower())
+        match = pattern.fullmatch(normalized_text)
         
         if match:
             logger.info(f"Matched pole type: {pole_type} for message: '{message_text}'")
@@ -48,8 +49,14 @@ def check_pole_message(message_text, message_date, user_id, group_id):
                 # Process regular pole attempt
                 return process_pole_attempt(pole_type, madrid_time, user_id, group_id), None
     
+    # Try again with a more lenient match (contains instead of fullmatch)
+    # This is helpful for debugging but could cause false positives in production
     if DEBUG_POLE_MATCHING:
-        logger.debug(f"No pole pattern matched for message: '{message_text}'")
+        for pattern, pole_type in COMPILED_TRIGGERS:
+            if pattern.search(normalized_text):
+                logger.debug(f"Partial match found for pole type: {pole_type}, but fullmatch required")
+    
+    logger.debug(f"No pole pattern matched for message: '{message_text}'")
     return None, None
 
 def process_pole_attempt(pole_type, madrid_time, user_id, group_id):
@@ -121,7 +128,7 @@ def process_counter_based_pole(pole_type, madrid_time, user_id, group_id):
             
             # Mark as completed
             db.pole_counters.update_one(
-                {"_id": counter["_id"]},
+                {"_id": counter.get("_id")},
                 {"$set": {"completed": True}}
             )
             
@@ -134,8 +141,23 @@ def process_counter_based_pole(pole_type, madrid_time, user_id, group_id):
         # Not completed yet, return a progress message
         remaining = required_count - counter["count"]
         emoji = pole_config.get("emoji", "🎯")
-        message = f"{emoji} ¡Intento #{counter['count']} de {pole_type}! Faltan {remaining} intentos más hoy."
+        
+        # For Pole Mina, show the masked string
+        if pole_type == "Pole Mina":
+            # Reveal one more character
+            pole_mina_doc = PoleMina.reveal_character(group_id, madrid_time.date())
+            masked_string = PoleMina.get_masked_string(pole_mina_doc)
+            
+            message = (
+                f"{emoji} ¡Intento #{counter['count']} de {pole_type}!\n"
+                f"Código secreto: `{masked_string}`\n"
+                f"Faltan {remaining} intentos más para detonar."
+            )
+        else:
+            message = f"{emoji} ¡Intento #{counter['count']} de {pole_type}! Faltan {remaining} intentos más hoy."
+        
         return None, message
+
 
 def check_time_condition(time_condition, current_time):
     """
@@ -328,7 +350,7 @@ def format_pole_message(pole_data, user_name):
     ]
     
     # Special messages for specific pole types
-    special_msgs = {}
+    special_msgs = []
     
     # Regular pole/subpole/subsubpole
     if pole_type in ["Pole", "Subpole", "Subsubpole"]:
@@ -340,11 +362,20 @@ def format_pole_message(pole_data, user_name):
     
     # Pole Mina (completed)
     elif pole_type == "Pole Mina":
+        # Get the fully revealed string
+        try:
+            pole_mina_doc = PoleMina.get_or_create_daily_string(pole_data['group_id'], 
+                                                              pole_data['created_at'].date())
+            revealed_string = pole_mina_doc["random_string"]
+        except:
+            # Fallback if we can't get the string
+            revealed_string = "???????????"
+        
         special_msgs = [
-            f"¡BOOM! La mina ha explotado en tus manos 💣",
-            f"¡Has desactivado la mina con precisión!",
-            f"Tu perseverancia ha dado frutos, ¡20 intentos y lo conseguiste!",
-            f"La suerte del minero está contigo hoy"
+            f"¡BOOM! La mina ha explotado en tus manos 💣 Código completo: `{revealed_string}`",
+            f"¡Has desactivado la mina con precisión! Código: `{revealed_string}`",
+            f"Tu perseverancia ha dado frutos, ¡20 intentos y lo conseguiste! Código: `{revealed_string}`",
+            f"La suerte del minero está contigo hoy. Código secreto: `{revealed_string}`"
         ]
     
     # Time-specific poles
@@ -375,3 +406,4 @@ def format_pole_message(pole_data, user_name):
         message += f"\n\n{random.choice(flairs)}"
     
     return message
+

@@ -1,5 +1,7 @@
 from pymongo import MongoClient
 import os
+import string
+import random
 from datetime import datetime
 from dotenv import load_dotenv
 from loguru import logger
@@ -412,3 +414,106 @@ class Pole:
         except Exception as e:
             logger.error(f"Error getting pole counter: {e}")
             return None
+        
+class PoleMina:
+    """Class for pole mina-related functionality."""
+    
+    @staticmethod
+    def generate_random_string(length=20):
+        """Generate a random string of specified length."""
+        characters = string.ascii_uppercase + string.digits
+        return ''.join(random.choice(characters) for _ in range(length))
+    
+    @staticmethod
+    def get_or_create_daily_string(group_id, date):
+        """Get or create daily random string for a group."""
+        date_str = date.strftime("%Y-%m-%d")
+        
+        try:
+            # Check if we already have a string for today
+            pole_mina_doc = db.pole_mina.find_one({
+                "group_id": group_id,
+                "date": date_str
+            })
+            
+            if not pole_mina_doc:
+                # Create a new random string
+                random_string = PoleMina.generate_random_string(20)
+                pole_mina_doc = {
+                    "group_id": group_id,
+                    "date": date_str,
+                    "random_string": random_string,
+                    "revealed_positions": [],
+                    "created_at": datetime.utcnow()
+                }
+                
+                db.pole_mina.insert_one(pole_mina_doc)
+                logger.info(f"Created new pole mina string for group {group_id}: {random_string}")
+            
+            return pole_mina_doc
+        except Exception as e:
+            logger.error(f"Error getting/creating pole mina string: {e}")
+            # Return a fallback document
+            return {
+                "group_id": group_id,
+                "date": date_str,
+                "random_string": PoleMina.generate_random_string(20),
+                "revealed_positions": []
+            }
+    
+    @staticmethod
+    def reveal_character(group_id, date):
+        """Reveal the next character in the random string."""
+        date_str = date.strftime("%Y-%m-%d")
+        
+        try:
+            # Get the pole mina document
+            pole_mina_doc = PoleMina.get_or_create_daily_string(group_id, date)
+            
+            # Calculate which position to reveal next
+            random_string = pole_mina_doc["random_string"]
+            revealed_positions = pole_mina_doc.get("revealed_positions", [])
+            
+            if len(revealed_positions) >= len(random_string):
+                # All characters are already revealed
+                return pole_mina_doc
+            
+            # Find a position that hasn't been revealed yet
+            unrevealed_positions = [i for i in range(len(random_string)) if i not in revealed_positions]
+            if unrevealed_positions:
+                # Reveal the next character (in sequence from left to right)
+                next_position = min(unrevealed_positions)
+                revealed_positions.append(next_position)
+                
+                # Update the document
+                db.pole_mina.update_one(
+                    {"group_id": group_id, "date": date_str},
+                    {"$set": {"revealed_positions": revealed_positions}}
+                )
+                
+                # Update the local document
+                pole_mina_doc["revealed_positions"] = revealed_positions
+            
+            return pole_mina_doc
+        except Exception as e:
+            logger.error(f"Error revealing character: {e}")
+            return None
+    
+    @staticmethod
+    def get_masked_string(pole_mina_doc):
+        """Get the partially revealed string."""
+        if not pole_mina_doc:
+            return "????????????????????????"
+        
+        random_string = pole_mina_doc["random_string"]
+        revealed_positions = pole_mina_doc.get("revealed_positions", [])
+        
+        # Create masked string
+        masked = []
+        for i in range(len(random_string)):
+            if i in revealed_positions:
+                masked.append(random_string[i])
+            else:
+                masked.append("?")
+        
+        return ''.join(masked)

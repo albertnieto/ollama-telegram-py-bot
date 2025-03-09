@@ -1,5 +1,4 @@
 import re
-import os
 from dotenv import load_dotenv
 from loguru import logger
 
@@ -187,10 +186,23 @@ COMPILED_TRIGGERS = []
 for pole_type, config in ALL_POLE_TYPES.items():
     for trigger in config["triggers"]:
         # Compile the regex and store with the pole type
-        COMPILED_TRIGGERS.append((re.compile(trigger, re.IGNORECASE), pole_type))
+        # Note: Using re.IGNORECASE to make the matching case-insensitive
+        # Convert the pattern to a full match pattern if it's not already (e.g., "^pole$" stays as is, but "pole" becomes "^pole$")
+        pattern = trigger
+        if not pattern.startswith('^'):
+            pattern = '^' + pattern
+        if not pattern.endswith('$'):
+            pattern = pattern + '$'
+        
+        try:
+            compiled_pattern = re.compile(pattern, re.IGNORECASE)
+            COMPILED_TRIGGERS.append((compiled_pattern, pole_type))
+            logger.debug(f"Compiled pattern '{pattern}' for pole type '{pole_type}'")
+        except re.error as e:
+            logger.error(f"Invalid regex pattern '{pattern}' for pole type '{pole_type}': {e}")
 
 # Log the total number of triggers
 logger.info(f"Loaded {len(COMPILED_TRIGGERS)} pole triggers for {len(ALL_POLE_TYPES)} pole types")
 
-# Debug mode to log all matching 
+# Set debug mode to log all matching attempts
 DEBUG_POLE_MATCHING = True

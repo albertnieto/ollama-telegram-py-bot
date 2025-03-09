@@ -22,16 +22,16 @@ def check_llm_availability():
     """
     global _llm_available
     
-    # If we've already checked and LLM is disabled, no need to check again
-    if _llm_available is False:
-        return False
-        
     # If OLLAMA_ENABLED is False, don't even try
     if not OLLAMA_ENABLED:
         logger.info("Ollama integration is disabled via configuration.")
         _llm_available = False
         return False
     
+    # If we've already checked and LLM is disabled, no need to check again
+    if _llm_available is False:
+        return False
+        
     try:
         # Use a simple health check if available, or a minimal query
         logger.info(f"Testing connection to Ollama at {OLLAMA_API_URL}")
@@ -59,7 +59,7 @@ def check_llm_availability():
         logger.error(f"Unexpected error checking Ollama availability: {ex}")
         _llm_available = False
         return False
-
+    
 def query_llm(prompt: str) -> str:
     """
     Sends the prompt to the LLM API endpoint (with streaming disabled)

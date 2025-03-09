@@ -1,4 +1,3 @@
-# create a file named check_db.py
 from dotenv import load_dotenv
 import os
 from pymongo import MongoClient
@@ -50,8 +49,13 @@ try:
     
     if 'pole_counters' not in collection_names:
         db.create_collection('pole_counters')
-        db.pole_counters.create_index({"group_id": 1, "type": 1, "date": 1}, {"unique": True})
+        db.pole_counters.create_index({"group_id": 1, "type": 1, "date": 1}, unique=True)
         print("Created pole_counters collection")
+        
+    if 'pole_mina' not in collection_names:
+        db.create_collection('pole_mina')
+        db.pole_mina.create_index({"group_id": 1, "date": 1}, unique=True)
+        print("Created pole_mina collection")
     
     print("Database setup complete!")
     
