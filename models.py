@@ -2,19 +2,177 @@ from pymongo import MongoClient
 import os
 from datetime import datetime
 from dotenv import load_dotenv
+from loguru import logger
 
 # Load environment variables
 load_dotenv()
 
 # MongoDB connection
 mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
-client = MongoClient(mongo_uri)
-db = client[os.getenv("DB_NAME", "telegram_bot")]
+logger.info(f"Connecting to MongoDB at: {mongo_uri}")
 
-# Collections
-users_collection = db.users
-groups_collection = db.groups
-poles_collection = db.poles
+try:
+    client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
+    # Test connection
+    client.server_info()
+    db = client[os.getenv("DB_NAME", "telegram_bot")]
+
+    # Collections
+    users_collection = db.users
+    groups_collection = db.groups
+    poles_collection = db.poles
+    
+    logger.info("Successfully connected to MongoDB")
+except Exception as e:
+    logger.error(f"MongoDB connection error: {e}")
+    # Create a fallback to allow the bot to start even without MongoDB
+    logger.warning("Using memory-based fallbacks for database. Data will not persist!")
+    
+    class DummyCollection:
+        def __init__(self, name):
+            self.name = name
+            self.data = []
+            self._id_counter = 1
+        
+        def insert_one(self, document):
+            document['_id'] = self._id_counter
+            self._id_counter += 1
+            self.data.append(document)
+            return type('obj', (object,), {'inserted_id': document['_id']})
+        
+        def update_one(self, filter, update, upsert=False):
+            for i, doc in enumerate(self.data):
+                match = True
+                for k, v in filter.items():
+                    if k not in doc or doc[k] != v:
+                        match = False
+                        break
+                
+                if match:
+                    for op, fields in update.items():
+                        if op == "$set":
+                            for k, v in fields.items():
+                                doc[k] = v
+                        elif op == "$setOnInsert" and i == len(self.data) - 1:
+                            for k, v in fields.items():
+                                if k not in doc:
+                                    doc[k] = v
+                    return type('obj', (object,), {'modified_count': 1})
+            
+            if upsert:
+                new_doc = {}
+                for k, v in filter.items():
+                    new_doc[k] = v
+                
+                for op, fields in update.items():
+                    if op in ["$set", "$setOnInsert"]:
+                        for k, v in fields.items():
+                            new_doc[k] = v
+                
+                self.insert_one(new_doc)
+                return type('obj', (object,), {'upserted_id': new_doc['_id']})
+            
+            return type('obj', (object,), {'modified_count': 0})
+        
+        def find_one(self, filter):
+            for doc in self.data:
+                match = True
+                for k, v in filter.items():
+                    if k not in doc or doc[k] != v:
+                        match = False
+                        break
+                
+                if match:
+                    return doc
+            return None
+        
+        def find(self, filter=None):
+            if filter is None:
+                return self.data.copy()
+            
+            results = []
+            for doc in self.data:
+                match = True
+                for k, v in filter.items():
+                    if k not in doc or doc[k] != v:
+                        match = False
+                        break
+                
+                if match:
+                    results.append(doc)
+            
+            return type('obj', (object,), {
+                'sort': lambda field, direction: sorted(results, key=lambda x: x.get(field[0], 0), reverse=direction < 0)
+            })
+        
+        def aggregate(self, pipeline):
+            # Very simple aggregation implementation
+            # Only supports basic $match and $group operations
+            data = self.data.copy()
+            
+            for stage in pipeline:
+                if "$match" in stage:
+                    new_data = []
+                    for doc in data:
+                        match = True
+                        for k, v in stage["$match"].items():
+                            if k not in doc or doc[k] != v:
+                                match = False
+                                break
+                        
+                        if match:
+                            new_data.append(doc)
+                    data = new_data
+                
+                elif "$group" in stage:
+                    groups = {}
+                    id_field = stage["$group"]["_id"]
+                    
+                    for doc in data:
+                        key = doc.get(id_field, None)
+                        if key not in groups:
+                            groups[key] = {"_id": key}
+                            
+                            for output_field, operation in stage["$group"].items():
+                                if output_field != "_id":
+                                    if "$sum" in operation:
+                                        field = operation["$sum"]
+                                        if field == 1:
+                                            groups[key][output_field] = 1
+                                        else:
+                                            groups[key][output_field] = doc.get(field, 0)
+                        else:
+                            for output_field, operation in stage["$group"].items():
+                                if output_field != "_id":
+                                    if "$sum" in operation:
+                                        field = operation["$sum"]
+                                        if field == 1:
+                                            groups[key][output_field] += 1
+                                        else:
+                                            groups[key][output_field] += doc.get(field, 0)
+                    
+                    data = list(groups.values())
+                
+                elif "$sort" in stage:
+                    for field, direction in stage["$sort"].items():
+                        data.sort(key=lambda x: x.get(field, 0), reverse=direction < 0)
+                
+                elif "$limit" in stage:
+                    data = data[:stage["$limit"]]
+            
+            return data
+    
+    class DummyDb:
+        def __init__(self):
+            self.users = DummyCollection("users")
+            self.groups = DummyCollection("groups")
+            self.poles = DummyCollection("poles")
+            self.pole_counters = DummyCollection("pole_counters")
+    
+    db = DummyDb()
+    users_collection = db.users
+    groups_collection = db.groups
+    poles_collection = db.poles
 
 class User:
     """User model for storing Telegram user data and pole statistics."""
@@ -30,35 +188,47 @@ class User:
             "updated_at": datetime.utcnow()
         }
         
-        users_collection.update_one(
-            {"telegram_id": telegram_id},
-            {"$set": user_data, "$setOnInsert": {"created_at": datetime.utcnow()}},
-            upsert=True
-        )
-        
-        return user_data
+        try:
+            users_collection.update_one(
+                {"telegram_id": telegram_id},
+                {"$set": user_data, "$setOnInsert": {"created_at": datetime.utcnow()}},
+                upsert=True
+            )
+            
+            return user_data
+        except Exception as e:
+            logger.error(f"Error creating/updating user: {e}")
+            return None
     
     @staticmethod
     def get_user(telegram_id):
         """Get user by Telegram ID."""
-        return users_collection.find_one({"telegram_id": telegram_id})
+        try:
+            return users_collection.find_one({"telegram_id": telegram_id})
+        except Exception as e:
+            logger.error(f"Error getting user: {e}")
+            return None
     
     @staticmethod
     def get_user_points(telegram_id, group_id=None):
         """Get total points for a user, optionally filtered by group."""
-        match = {"user_id": telegram_id}
-        if group_id:
-            match["group_id"] = group_id
+        try:
+            match = {"user_id": telegram_id}
+            if group_id:
+                match["group_id"] = group_id
+                
+            pipeline = [
+                {"$match": match},
+                {"$group": {"_id": "$user_id", "total_points": {"$sum": "$points"}}}
+            ]
             
-        pipeline = [
-            {"$match": match},
-            {"$group": {"_id": "$user_id", "total_points": {"$sum": "$points"}}}
-        ]
-        
-        result = list(poles_collection.aggregate(pipeline))
-        if result:
-            return result[0]["total_points"]
-        return 0
+            result = list(poles_collection.aggregate(pipeline))
+            if result:
+                return result[0]["total_points"]
+            return 0
+        except Exception as e:
+            logger.error(f"Error getting user points: {e}")
+            return 0
 
 class Group:
     """Group model for storing Telegram group data."""
@@ -73,18 +243,26 @@ class Group:
             "updated_at": datetime.utcnow()
         }
         
-        groups_collection.update_one(
-            {"chat_id": chat_id},
-            {"$set": group_data, "$setOnInsert": {"created_at": datetime.utcnow()}},
-            upsert=True
-        )
-        
-        return group_data
+        try:
+            groups_collection.update_one(
+                {"chat_id": chat_id},
+                {"$set": group_data, "$setOnInsert": {"created_at": datetime.utcnow()}},
+                upsert=True
+            )
+            
+            return group_data
+        except Exception as e:
+            logger.error(f"Error creating/updating group: {e}")
+            return None
     
     @staticmethod
     def get_group(chat_id):
         """Get group by chat ID."""
-        return groups_collection.find_one({"chat_id": chat_id})
+        try:
+            return groups_collection.find_one({"chat_id": chat_id})
+        except Exception as e:
+            logger.error(f"Error getting group: {e}")
+            return None
 
 class Pole:
     """Pole model for storing pole data."""
@@ -103,102 +281,134 @@ class Pole:
             "created_at": message_date
         }
         
-        result = poles_collection.insert_one(pole_data)
-        pole_data["_id"] = result.inserted_id
-        
-        return pole_data
+        try:
+            result = poles_collection.insert_one(pole_data)
+            pole_data["_id"] = result.inserted_id
+            
+            return pole_data
+        except Exception as e:
+            logger.error(f"Error creating pole: {e}")
+            return None
         
     @staticmethod
     def track_attempt(group_id, pole_type, user_id, message_date):
         """Track an attempt at a counter-based pole."""
         date_str = message_date.strftime("%Y-%m-%d")
         
-        # Get or create the counter document
-        counter_doc = db.pole_counters.find_one({
-            "group_id": group_id,
-            "type": pole_type,
-            "date": date_str
-        })
-        
-        if not counter_doc:
-            # Create a new counter document
-            counter_doc = {
+        try:
+            # Get or create the counter document
+            counter_doc = db.pole_counters.find_one({
+                "group_id": group_id,
+                "type": pole_type,
+                "date": date_str
+            })
+            
+            if not counter_doc:
+                # Create a new counter document
+                counter_doc = {
+                    "group_id": group_id,
+                    "type": pole_type,
+                    "date": date_str,
+                    "count": 0,
+                    "user_attempts": [],
+                    "completed": False,
+                    "created_at": message_date
+                }
+            
+            # Update the counter if not already completed
+            if not counter_doc.get("completed", False):
+                # Add this attempt
+                counter_doc["count"] = counter_doc.get("count", 0) + 1
+                
+                # Track this user's attempt
+                user_attempts = counter_doc.get("user_attempts", [])
+                user_attempts.append({
+                    "user_id": user_id,
+                    "timestamp": message_date
+                })
+                counter_doc["user_attempts"] = user_attempts
+                
+                # Update the document
+                db.pole_counters.update_one(
+                    {
+                        "group_id": group_id,
+                        "type": pole_type,
+                        "date": date_str
+                    },
+                    {"$set": counter_doc},
+                    upsert=True
+                )
+            
+            return counter_doc
+        except Exception as e:
+            logger.error(f"Error tracking pole attempt: {e}")
+            # Create a minimal counter doc for offline mode
+            return {
                 "group_id": group_id,
                 "type": pole_type,
                 "date": date_str,
-                "count": 0,
-                "user_attempts": [],
-                "completed": False,
-                "created_at": message_date
+                "count": 1,
+                "user_attempts": [{"user_id": user_id, "timestamp": message_date}],
+                "completed": False
             }
-        
-        # Update the counter if not already completed
-        if not counter_doc.get("completed", False):
-            # Add this attempt
-            counter_doc["count"] = counter_doc.get("count", 0) + 1
-            
-            # Track this user's attempt
-            user_attempts = counter_doc.get("user_attempts", [])
-            user_attempts.append({
-                "user_id": user_id,
-                "timestamp": message_date
-            })
-            counter_doc["user_attempts"] = user_attempts
-            
-            # Update the document
-            db.pole_counters.update_one(
-                {
-                    "group_id": group_id,
-                    "type": pole_type,
-                    "date": date_str
-                },
-                {"$set": counter_doc},
-                upsert=True
-            )
-        
-        return counter_doc
     
     @staticmethod
     def pole_exists(group_id, pole_type, date):
         """Check if a pole already exists for the given group, type, and date."""
         date_str = date.strftime("%Y-%m-%d")
-        return poles_collection.find_one({
-            "group_id": group_id,
-            "type": pole_type,
-            "date": date_str
-        }) is not None
+        try:
+            return poles_collection.find_one({
+                "group_id": group_id,
+                "type": pole_type,
+                "date": date_str
+            }) is not None
+        except Exception as e:
+            logger.error(f"Error checking if pole exists: {e}")
+            return False
     
     @staticmethod
     def get_daily_poles(group_id, date):
         """Get all poles for a group on a specific date."""
         date_str = date.strftime("%Y-%m-%d")
-        return list(poles_collection.find({
-            "group_id": group_id,
-            "date": date_str
-        }).sort("created_at", 1))
+        try:
+            return list(poles_collection.find({
+                "group_id": group_id,
+                "date": date_str
+            }).sort("created_at", 1))
+        except Exception as e:
+            logger.error(f"Error getting daily poles: {e}")
+            return []
     
     @staticmethod
     def get_ranking(group_id=None, limit=10):
         """Get user ranking by points, optionally filtered by group."""
-        match = {}
-        if group_id:
-            match["group_id"] = group_id
+        try:
+            match = {}
+            if group_id:
+                match["group_id"] = group_id
+                
+            pipeline = [
+                {"$match": match},
+                {"$group": {"_id": "$user_id", "total_points": {"$sum": "$points"}}},
+                {"$sort": {"total_points": -1}},
+                {"$limit": limit}
+            ]
             
-        pipeline = [
-            {"$match": match},
-            {"$group": {"_id": "$user_id", "total_points": {"$sum": "$points"}}},
-            {"$sort": {"total_points": -1}},
-            {"$limit": limit}
-        ]
-        
-        return list(poles_collection.aggregate(pipeline))
+            return list(poles_collection.aggregate(pipeline))
+        except Exception as e:
+            logger.error(f"Error getting ranking: {e}")
+            return []
         
     @staticmethod
     def get_counter_for_pole(group_id, pole_type, date):
         """Get the counter document for a counter-based pole."""
         date_str = date.strftime("%Y-%m-%d")
-        return db.pole_counters.find_one({
-            "group_id": group_id,
-            "type": pole_type,
-            "date": date_str
-        })
+        try:
+            return db.pole_counters.find_one({
+                "group_id": group_id,
+                "type": pole_type,
+                "date": date_str
+            })
+        except Exception as e:
+            logger.error(f"Error getting pole counter: {e}")
+            return None
